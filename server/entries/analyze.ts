@@ -1,6 +1,6 @@
-import { parseAnalysisInput } from "../src/lib/input.ts"
-import { INPUT_LIMITS } from "../src/lib/types.ts"
-import { runAnalysis } from "../server/runAnalysis.ts"
+import { parseAnalysisInput } from "../../src/lib/input.ts"
+import { INPUT_LIMITS } from "../../src/lib/types.ts"
+import { runAnalysis } from "../runAnalysis.ts"
 
 type NodeRequest = {
   method?: string

@@ -1,4 +1,4 @@
-import { modelConfigured } from "../server/runAnalysis.ts"
+import { modelConfigured } from "../runAnalysis.ts"
 
 type NodeRequest = { method?: string }
 type NodeResponse = {
