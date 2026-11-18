@@ -28,6 +28,17 @@ export const FOCUS_OPTIONS = [
 
 export type FocusId = (typeof FOCUS_OPTIONS)[number]["id"]
 
+export const FOCUS_IDS: FocusId[] = FOCUS_OPTIONS.map((option) => option.id)
+
+export const INPUT_LIMITS = {
+  teamName: 120,
+  supporting: 40_000,
+  bodyBytes: 2_000_000,
+  modelSingleChars: 60_000,
+  modelChunkChars: 20_000,
+  modelMaxChunks: 12,
+} as const
+
 export type AnalysisInput = {
   teamName: string
   transcript: string
@@ -72,6 +83,32 @@ export type ActionItem = {
   evaluate: string
 }
 
+export type MomentKind = "relationship" | "invite" | "norm" | "close"
+
+export type ReplayMoment = {
+  id: string
+  kind: MomentKind
+  title: string
+  whyThisMoment: string
+  before: { speaker: string; text: string } | null
+  line: { speaker: string; text: string }
+  prompt: string
+  inviteName: string
+}
+
+export type ScriptBeat = {
+  clock: string
+  owner: string
+  say: string
+  why: string
+}
+
+export type EchoNote = {
+  source: string
+  meeting: string
+  reading: string
+}
+
 export type Report = {
   mode: ReportMode
   teamName: string
@@ -97,6 +134,10 @@ export type Report = {
   actions: ActionItem[]
   discussionQuestions: string[]
   limitations: string[]
+  path: string[]
+  echo: EchoNote | null
+  replay: ReplayMoment[]
+  script: ScriptBeat[]
 }
 
 export function emptyInput(): AnalysisInput {

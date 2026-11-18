@@ -47,6 +47,21 @@ export function reportToText(report: Report): string {
   })
   lines.push("Discussion questions")
   report.discussionQuestions.forEach((question, index) => lines.push(`${index + 1}. ${question}`))
+  if (report.echo) {
+    lines.push("", "Pattern echo", report.echo.reading, `Earlier feedback: ${report.echo.source}`, `This meeting: ${report.echo.meeting}`)
+  }
+  if (report.replay.length) {
+    lines.push("", "Replay studio")
+    for (const moment of report.replay) {
+      lines.push(`${moment.title}`, `${moment.line.speaker}: ${moment.line.text}`, moment.prompt, "")
+    }
+  }
+  if (report.script.length) {
+    lines.push("Next meeting script")
+    for (const beat of report.script) {
+      lines.push(`${beat.clock} (${beat.owner}) ${beat.say}`)
+    }
+  }
   lines.push("", "Limitations")
   for (const note of report.limitations) lines.push(`- ${note}`)
   return lines.join("\n").trim()

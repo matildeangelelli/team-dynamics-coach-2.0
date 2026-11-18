@@ -4,6 +4,7 @@ import { AnalysisForm } from "./components/AnalysisForm.tsx"
 import { HowItWorks } from "./components/HowItWorks.tsx"
 import { Results } from "./components/Results.tsx"
 import { Shell, type View } from "./components/Shell.tsx"
+import { getAnalysisStatus, postAnalysis } from "./lib/api.ts"
 import { buildReport } from "./lib/analyze.ts"
 import { sampleInput } from "./lib/sample.ts"
 import { emptyInput, type AnalysisInput, type Report } from "./lib/types.ts"
@@ -18,10 +19,9 @@ export default function App() {
 
   useEffect(() => {
     let active = true
-    fetch("/api/status")
-      .then((response) => response.json())
-      .then((data: { aiConfigured?: boolean }) => {
-        if (active) setAiConfigured(Boolean(data.aiConfigured))
+    getAnalysisStatus()
+      .then((configured) => {
+        if (active) setAiConfigured(configured)
       })
       .catch(() => {
         if (active) setAiConfigured(false)
@@ -49,17 +49,9 @@ export default function App() {
     setBusy(true)
     setNotice(null)
     try {
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
-      })
-      const data = (await response.json()) as { report?: Report; notice?: string; error?: string }
-      if (!response.ok || !data.report) {
-        throw new Error(data.error || "The analysis could not be completed.")
-      }
+      const data = await postAnalysis(input)
       setReport(data.report)
-      setNotice(data.notice || data.report.disclaimer)
+      setNotice(data.notice)
       setView("results")
     } catch (error) {
       const local = buildReport(input, "local")

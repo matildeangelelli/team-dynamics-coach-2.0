@@ -2,22 +2,62 @@
 
 @theme {
   --font-sans: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Fraunces", "Source Serif 4", Georgia, serif;
   --color-navy: #16324f;
-  --color-ink: #10233f;
-  --color-accent: #3d6b94;
-  --color-paper: #f4f7fb;
+  --color-ink: #14253c;
+  --color-accent: #0f766e;
+  --color-paper: #f3f6fb;
+  --color-sky: #2563eb;
+  --color-lilac: #6d5cae;
+  --color-coral: #d97757;
+  --color-gold: #c9891a;
+}
+
+html {
+  color-scheme: light;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
   font-family: var(--font-sans);
-  background: var(--color-paper);
   color: var(--color-ink);
+  background-color: var(--color-paper);
+  background-image:
+    radial-gradient(1100px 520px at -8% -12%, rgba(37, 99, 235, 0.16), transparent 58%),
+    radial-gradient(900px 480px at 108% -6%, rgba(15, 118, 110, 0.16), transparent 52%),
+    radial-gradient(720px 380px at 92% 108%, rgba(217, 119, 87, 0.14), transparent 50%);
+  background-attachment: fixed;
 }
 
 button,
 input,
 textarea {
   font: inherit;
+}
+
+@layer components {
+  .btn-primary {
+    @apply rounded-xl bg-navy px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1e466c] hover:shadow-md disabled:opacity-60;
+  }
+
+  .btn-secondary {
+    @apply rounded-xl border border-slate-200 bg-white/90 px-4 py-2.5 text-sm font-semibold text-navy shadow-sm transition hover:border-accent/40 hover:bg-teal-50;
+  }
+
+  .btn-ghost {
+    @apply rounded-xl px-4 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-white hover:text-navy;
+  }
+
+  .surface {
+    @apply rounded-2xl border border-white/80 bg-white/85 shadow-[0_10px_30px_-18px_rgba(22,50,79,0.45)] backdrop-blur-sm;
+  }
+
+  .eyebrow {
+    @apply text-xs font-semibold uppercase tracking-[0.16em] text-accent;
+  }
+
+  .field-input {
+    @apply w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-ink shadow-inner outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20;
+  }
 }

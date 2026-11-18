@@ -22,3 +22,5 @@ Copy `.env.example` to `.env` and set `OPENAI_API_KEY`. Restart `npm run dev`. T
 Optional override: `OPENAI_MODEL=gpt-4o-mini`.
 
 Anonymize names before submitting text when a model key is set. Transcripts are not saved in a database.
+
+# team-dynamics-coach-2.0

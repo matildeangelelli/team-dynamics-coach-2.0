@@ -1,9 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { Plugin } from "vite"
-import { buildReport, coerceReport } from "../src/lib/analyze.ts"
-import type { AnalysisInput, FocusId } from "../src/lib/types.ts"
-
-const FOCUS: FocusId[] = ["participation", "communication", "roles", "coordination", "feedback"]
+import { buildReport, factsFromReport, groundModelReport } from "../src/lib/analyze.ts"
+import { parseAnalysisInput } from "../src/lib/input.ts"
+import { INPUT_LIMITS, type AnalysisInput, type Report } from "../src/lib/types.ts"
 
 export function apiPlugin(env: Record<string, string>): Plugin {
   const key = (env.OPENAI_API_KEY || process.env.OPENAI_API_KEY || "").trim()
@@ -29,7 +28,10 @@ export function apiPlugin(env: Record<string, string>): Plugin {
     try {
       body = await readBody(req)
     } catch {
-      send(res, 413, { error: "That transcript is larger than 2 MB. It is still in the form. Paste a shorter excerpt, or remove attachments that were copied in with the text." })
+      send(res, 413, {
+        error:
+          "That transcript is larger than 2 MB. It is still in the form. Paste a shorter excerpt, or remove attachments that were copied in with the text.",
+      })
       return true
     }
     let parsed: unknown
@@ -39,30 +41,29 @@ export function apiPlugin(env: Record<string, string>): Plugin {
       send(res, 400, { error: "The analysis request was not valid JSON." })
       return true
     }
-    const input = readInput(parsed)
+    const input = parseAnalysisInput(parsed)
     if (!input) {
       send(res, 400, { error: "Add a team name and a meeting transcript." })
       return true
     }
+    const local = buildReport(input, "local")
     if (!key) {
-      const report = buildReport(input, "local")
-      send(res, 200, { report, notice: report.disclaimer })
+      send(res, 200, { report: local, notice: local.disclaimer })
       return true
     }
     try {
-      const draft = await requestModel(input, key, model)
-      const report = coerceReport(draft, input)
+      const draft = await requestModel(input, local, key, model)
+      const report = groundModelReport(draft, input, local)
       if (!report) {
-        const local = buildReport(input, "local")
         send(res, 200, {
           report: local,
-          notice: "The model response could not be used, so Demo Mode produced this reading instead. A language-model report is not shown.",
+          notice:
+            "The model response could not be used, so Demo Mode produced this reading instead. A language-model report is not shown.",
         })
         return true
       }
       send(res, 200, { report, notice: report.disclaimer })
     } catch (error) {
-      const local = buildReport(input, "local")
       const reason = error instanceof Error ? error.message : "The model request failed."
       send(res, 200, { report: local, notice: `${reason} Demo Mode produced this reading instead.` })
     }
@@ -71,53 +72,44 @@ export function apiPlugin(env: Record<string, string>): Plugin {
 
   return {
     name: "team-dynamics-api",
-    configureServer(server) {
-      server.middlewares.use((req, res, next) => {
-        void handle(req, res)
-          .then((handled) => {
-            if (!handled) next()
-          })
-          .catch(() => {
-            if (!res.headersSent) send(res, 500, { error: "The analysis service hit an unexpected error." })
-          })
-      })
-    },
-    configurePreviewServer(server) {
-      server.middlewares.use((req, res, next) => {
-        void handle(req, res)
-          .then((handled) => {
-            if (!handled) next()
-          })
-          .catch(() => {
-            if (!res.headersSent) send(res, 500, { error: "The analysis service hit an unexpected error." })
-          })
-      })
-    },
+    configureServer: attach(handle),
+    configurePreviewServer: attach(handle),
   }
 }
 
-const MODEL_SINGLE = 60_000
-const MODEL_CHUNK = 20_000
-const MODEL_MAX_CHUNKS = 12
+function attach(handle: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>) {
+  return (server: { middlewares: { use: (fn: (req: IncomingMessage, res: ServerResponse, next: () => void) => void) => void } }) => {
+    server.middlewares.use((req, res, next) => {
+      void handle(req, res)
+        .then((handled) => {
+          if (!handled) next()
+        })
+        .catch(() => {
+          if (!res.headersSent) send(res, 500, { error: "The analysis service hit an unexpected error." })
+        })
+    })
+  }
+}
 
 class ModelLengthError extends Error {}
 
-async function requestModel(input: AnalysisInput, key: string, model: string): Promise<unknown> {
-  if (input.transcript.length <= MODEL_SINGLE) {
+async function requestModel(input: AnalysisInput, local: Report, key: string, model: string): Promise<unknown> {
+  if (input.transcript.length <= INPUT_LIMITS.modelSingleChars) {
     try {
-      return await completeModel(promptFor(input), key, model)
+      return await completeModel(promptFor(input, local), key, model)
     } catch (error) {
-      if (!(error instanceof ModelLengthError) || input.transcript.length <= MODEL_CHUNK) throw error
+      if (!(error instanceof ModelLengthError) || input.transcript.length <= INPUT_LIMITS.modelChunkChars) throw error
     }
   }
-  const chunks = splitTranscript(input.transcript, MODEL_CHUNK).slice(0, MODEL_MAX_CHUNKS)
-  const omitted = splitTranscript(input.transcript, MODEL_CHUNK).length > chunks.length
+  const chunks = splitTranscript(input.transcript, INPUT_LIMITS.modelChunkChars)
+  const limited = chunks.slice(0, INPUT_LIMITS.modelMaxChunks)
+  const omitted = chunks.length > limited.length
   const notes: string[] = []
-  for (let index = 0; index < chunks.length; index += 1) {
-    const partial = await completeModel(partialPrompt(chunks[index], index + 1, chunks.length), key, model)
+  for (let index = 0; index < limited.length; index += 1) {
+    const partial = await completeModel(partialPrompt(limited[index], index + 1, limited.length), key, model)
     notes.push(JSON.stringify(partial).slice(0, 4_000))
   }
-  return completeModel(synthesisPrompt(input, notes, omitted), key, model)
+  return completeModel(synthesisPrompt(input, local, notes, omitted), key, model)
 }
 
 async function completeModel(content: string, key: string, model: string): Promise<unknown> {
@@ -138,7 +130,7 @@ async function completeModel(content: string, key: string, model: string): Promi
           {
             role: "system",
             content:
-              "You help a university team leader reflect on observable team process. Return only JSON. Use only the supplied materials. Do not invent quotes. If evidence is thin, say so. Do not claim to know how anyone felt, and do not diagnose psychological safety. Speaking time is not contribution quality. Recommendations name a role, not a personal failing. Direct challenge belongs on the work, with care for the person.",
+              "You help a university team leader reflect on observable team process. Return only JSON. Use only the supplied materials and measured facts. Do not invent quotes or speaker counts. If evidence is thin, say so. Do not claim to know how anyone felt, and do not diagnose psychological safety. Speaking time is not contribution quality. Recommendations name a role, not a personal failing. Direct challenge belongs on the work, with care for the person. The priority field names one next practice, not a list of every requested focus.",
           },
           { role: "user", content },
         ],
@@ -197,15 +189,15 @@ TRANSCRIPT PART:
 ${chunk}`
 }
 
-function synthesisPrompt(input: AnalysisInput, notes: string[], omitted: boolean): string {
-  return `${promptFor({ ...input, transcript: "(see part notes below; do not expect the raw transcript)" })}
+function synthesisPrompt(input: AnalysisInput, local: Report, notes: string[], omitted: boolean): string {
+  return `${promptFor({ ...input, transcript: "(see part notes below; do not expect the raw transcript)" }, local)}
 
 PART NOTES:
 ${notes.join("\n\n")}
 ${omitted ? "\nThe transcript continued beyond these parts. Say that the model reading covers the first 240,000 characters only." : ""}`
 }
 
-function promptFor(input: AnalysisInput): string {
+function promptFor(input: AnalysisInput, local: Report): string {
   return `Return a JSON object with these keys:
 teamName, focus, executiveSummary {strengths, challenges, priority},
 participation {summary, speakers: [{name, turns, words, wordShare, questions, buildOns}]},
@@ -215,6 +207,11 @@ opportunities: up to 3 of {title, observation, evidence, whyItMatters, confidenc
 actions: exactly 3 of {problem, action, owner, when, evaluate},
 discussionQuestions: 3 strings that do not blame a person,
 limitations: array of strings.
+
+Each action must be something a facilitator or note-taker can try in the next meeting, with a visible check. Do not name a personal failing. Priority is one practice, not a list of every focus area.
+
+MEASURED FACTS from a local parser. Treat speaker counts as ground truth. Do not invent quotes.
+${JSON.stringify(factsFromReport(local))}
 
 Team name: ${input.teamName}
 Requested focus: ${input.focus.join(", ")}
@@ -232,29 +229,13 @@ TRANSCRIPT:
 ${input.transcript}`
 }
 
-function readInput(value: unknown): AnalysisInput | null {
-  if (!value || typeof value !== "object") return null
-  const raw = value as Partial<AnalysisInput>
-  if (typeof raw.teamName !== "string" || !raw.teamName.trim()) return null
-  if (typeof raw.transcript !== "string" || !raw.transcript.trim()) return null
-  const focus = Array.isArray(raw.focus) ? raw.focus.filter((item): item is FocusId => FOCUS.includes(item as FocusId)) : []
-  return {
-    teamName: raw.teamName.slice(0, 120),
-    transcript: raw.transcript,
-    charter: typeof raw.charter === "string" ? raw.charter.slice(0, 40_000) : "",
-    feedback: typeof raw.feedback === "string" ? raw.feedback.slice(0, 40_000) : "",
-    assessments: typeof raw.assessments === "string" ? raw.assessments.slice(0, 40_000) : "",
-    focus,
-  }
-}
-
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let size = 0
     req.on("data", (chunk: Buffer) => {
       size += chunk.length
-      if (size > 2_000_000) {
+      if (size > INPUT_LIMITS.bodyBytes) {
         reject(new Error("too large"))
         req.destroy()
         return

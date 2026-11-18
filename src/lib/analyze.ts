@@ -1,12 +1,15 @@
 import {
-  FOCUS_OPTIONS,
+  FOCUS_IDS,
   type ActionItem,
   type AnalysisInput,
   type Confidence,
+  type EchoNote,
   type FocusId,
   type Opportunity,
+  type ReplayMoment,
   type Report,
   type ReportMode,
+  type ScriptBeat,
   type SpeakerStat,
   type Strength,
 } from "./types.ts"
@@ -32,7 +35,9 @@ type Scored = SpeakerStat & {
   assessment: string
 }
 
-type OppDraft = Opportunity & { rank: number }
+type OpportunityId = "relationship" | "airtime" | "invite" | "norm" | "close" | "missing"
+
+type OppDraft = Opportunity & { id: OpportunityId; rank: number }
 
 export function buildReport(input: AnalysisInput, mode: ReportMode): Report {
   const focus = sanitizeFocus(input.focus)
@@ -111,10 +116,22 @@ export function buildReport(input: AnalysisInput, mode: ReportMode): Report {
     hasConsent: /consent|object|full round/i.test(input.charter),
   })
   const discussionQuestions = collectQuestions(opportunities, focus)
+  const studio = collectStudio({
+    turns,
+    relTurns,
+    vagueInvite,
+    normHit,
+    commitments,
+    input,
+    top,
+    low,
+    opportunities,
+    feedbackNote,
+  })
 
   const leadOpp = opportunities[0]
   const leadStrength = strengths[0]
-  const focusText = focus.map(labelFor).join(", ")
+  const leadAction = actions[0]
 
   return {
     mode,
@@ -128,7 +145,9 @@ export function buildReport(input: AnalysisInput, mode: ReportMode): Report {
       challenges: leadOpp
         ? leadOpp.observation
         : "No strong process problem stood out beyond the limits of a single transcript.",
-      priority: `You asked about ${focusText}. ${actions[0]?.action ?? "Use the next meeting to gather a fuller sample."}`,
+      priority: leadAction
+        ? `${leadAction.action} Give this to the ${leadAction.owner.toLowerCase()} ${leadAction.when.toLowerCase()}.`
+        : "Use the next meeting to gather a fuller sample.",
     },
     participation: { summary: participation, speakers: speakers.map(publicSpeaker) },
     communication: { summary: communication },
@@ -138,48 +157,114 @@ export function buildReport(input: AnalysisInput, mode: ReportMode): Report {
     actions,
     discussionQuestions,
     limitations,
+    path: studio.path,
+    echo: studio.echo,
+    replay: studio.replay,
+    script: studio.script,
   }
+}
+
+export function factsFromReport(report: Report) {
+  return {
+    speakers: report.participation.speakers,
+    strengths: report.strengths.map((item) => ({ title: item.title, detail: item.detail })),
+    opportunities: report.opportunities.map((item) => ({
+      title: item.title,
+      observation: item.observation,
+      evidence: item.evidence,
+      confidence: item.confidence,
+    })),
+    candidateActions: report.actions,
+  }
+}
+
+export function groundModelReport(value: unknown, input: AnalysisInput, local = buildReport(input, "local")): Report | null {
+  const model = coerceReport(value, input)
+  if (!model) return null
+  return {
+    ...model,
+    executiveSummary: {
+      strengths: model.executiveSummary.strengths || local.executiveSummary.strengths,
+      challenges: model.executiveSummary.challenges || local.executiveSummary.challenges,
+      priority: model.executiveSummary.priority || local.executiveSummary.priority,
+    },
+    participation: {
+      summary: model.participation.summary || local.participation.summary,
+      speakers: local.participation.speakers,
+    },
+    communication: { summary: model.communication.summary || local.communication.summary },
+    roles: { summary: model.roles.summary || local.roles.summary },
+    strengths: model.strengths.length ? model.strengths : local.strengths,
+    opportunities: model.opportunities.length ? model.opportunities : local.opportunities,
+    actions: usableActions(model.actions) ? model.actions : local.actions,
+    discussionQuestions: model.discussionQuestions.length === 3 ? model.discussionQuestions : local.discussionQuestions,
+    path: local.path,
+    echo: local.echo,
+    replay: local.replay,
+    script: local.script,
+  }
+}
+
+function usableActions(actions: ActionItem[]): boolean {
+  return actions.length === 3 && actions.every((item) => item.action.trim().length > 40 && item.evaluate.trim().length > 20)
 }
 
 export function coerceReport(value: unknown, input: AnalysisInput): Report | null {
   if (!value || typeof value !== "object") return null
-  const raw = value as Partial<Report>
+  const unwrapped = value as { report?: unknown }
+  const root = unwrapped.report && typeof unwrapped.report === "object" ? unwrapped.report : value
+  const raw = root as Partial<Report> & { participation?: unknown; communication?: unknown; roles?: unknown }
   const focus = sanitizeFocus(Array.isArray(raw.focus) ? raw.focus : input.focus)
-  if (!raw.executiveSummary || !raw.participation || !raw.communication || !raw.roles) return null
-  if (!isText(raw.executiveSummary.strengths) || !isText(raw.executiveSummary.challenges) || !isText(raw.executiveSummary.priority)) {
-    return null
-  }
-  if (!isText(raw.participation.summary) || !isText(raw.communication.summary) || !isText(raw.roles.summary)) return null
-  const strengths = asStrengths(raw.strengths)
-  const opportunities = asOpportunities(raw.opportunities)
-  const actions = asActions(raw.actions)
-  const discussionQuestions = asQuestions(raw.discussionQuestions)
-  if (!strengths || !opportunities || !actions || !discussionQuestions) return null
-  const speakers = Array.isArray(raw.participation.speakers)
-    ? raw.participation.speakers.filter(isSpeaker).slice(0, 12)
-    : []
+  const exec = asExecutive(raw.executiveSummary)
+  const participationSummary = asBlockText(raw.participation)
+  const communicationSummary = asBlockText(raw.communication)
+  const rolesSummary = asBlockText(raw.roles)
+  if (!exec || !participationSummary || !communicationSummary || !rolesSummary) return null
+  const speakers =
+    raw.participation && typeof raw.participation === "object" && Array.isArray((raw.participation as { speakers?: unknown }).speakers)
+      ? (raw.participation as { speakers: unknown[] }).speakers.filter(isSpeaker).slice(0, 12)
+      : []
   return {
     mode: "openai",
     teamName: input.teamName.trim() || "Untitled team",
     focus,
     disclaimer:
       "This report was drafted by a language model from the text you submitted. Check the quotes against the transcript before you share it. It is a suggestion, not a judgment about any person.",
-    executiveSummary: {
-      strengths: raw.executiveSummary.strengths.trim(),
-      challenges: raw.executiveSummary.challenges.trim(),
-      priority: raw.executiveSummary.priority.trim(),
-    },
-    participation: { summary: raw.participation.summary.trim(), speakers },
-    communication: { summary: raw.communication.summary.trim() },
-    roles: { summary: raw.roles.summary.trim() },
-    strengths,
-    opportunities,
-    actions,
-    discussionQuestions,
+    executiveSummary: exec,
+    participation: { summary: participationSummary, speakers },
+    communication: { summary: communicationSummary },
+    roles: { summary: rolesSummary },
+    strengths: asStrengths(raw.strengths),
+    opportunities: asOpportunities(raw.opportunities),
+    actions: asActions(raw.actions),
+    discussionQuestions: asQuestions(raw.discussionQuestions),
     limitations: Array.isArray(raw.limitations)
       ? raw.limitations.filter(isText).map((item) => item.trim()).slice(0, 6)
       : ["A transcript cannot show how anyone felt. Review every claim against the source text."],
+    path: [],
+    echo: null,
+    replay: [],
+    script: [],
   }
+}
+
+function asExecutive(value: unknown): Report["executiveSummary"] | null {
+  if (!value || typeof value !== "object") return null
+  const raw = value as Report["executiveSummary"]
+  const strengths = isText(raw.strengths) ? raw.strengths.trim() : ""
+  const challenges = isText(raw.challenges) ? raw.challenges.trim() : ""
+  const priority = isText(raw.priority) ? raw.priority.trim() : ""
+  if (!strengths && !challenges && !priority) return null
+  return { strengths, challenges, priority }
+}
+
+function asBlockText(value: unknown): string | null {
+  if (isText(value)) return value.trim()
+  if (!value || typeof value !== "object") return null
+  const raw = value as { summary?: unknown; text?: unknown }
+  if (isText(raw.summary)) return raw.summary.trim()
+  if (isText(raw.text)) return raw.text.trim()
+  return null
 }
 
 function thinReport(args: {
@@ -218,7 +303,7 @@ function thinReport(args: {
       {
         title: "The sample is too thin",
         observation,
-        evidence: "Fewer than four speaker turns, or fewer than 80 words, were available.",
+        evidence: "The paste has fewer than 40 words, which is too little to describe a team pattern.",
         whyItMatters: "Advice based on a fragment can send a leader after the wrong problem.",
         confidence: "low",
         limitations: "Absence of evidence in a short paste is not evidence that the team lacks a strength.",
@@ -254,6 +339,17 @@ function thinReport(args: {
       "What would a useful close include: an owner, a date, or a check for objections?",
     ],
     limitations: args.limitations,
+    path: args.speakers.map((speaker) => speaker.name),
+    echo: null,
+    replay: [],
+    script: [
+      {
+        clock: "0:00",
+        owner: "Team leader",
+        say: "This paste is too short to rehearse a moment. Record a full working meeting, then come back.",
+        why: "A replay and a 12-minute script need an opening, a disagreement, and a close.",
+      },
+    ],
   }
 }
 
@@ -438,6 +534,7 @@ function collectOpportunities(args: {
 
   if (args.relTurns.length) {
     items.push({
+      id: "relationship",
       rank: rank("feedback", args.focus, 0),
       title: "Disagreement landed on a person",
       observation: `${args.relTurns[0].speaker} answered a challenge by characterizing the person, not only the option.`,
@@ -452,6 +549,7 @@ function collectOpportunities(args: {
   if (args.top && args.low && args.top.name !== args.low.name && (args.top.wordShare >= 0.4 || args.low.wordShare <= 0.08)) {
     const agreed = args.feedbackNote && namesIn(args.feedbackNote, [args.top.name, args.low.name])
     items.push({
+      id: "airtime",
       rank: rank("participation", args.focus, 1),
       title: "Airtime was uneven",
       observation: `${args.top.name} used ${pct(args.top.wordShare)} of the words. ${args.low.name} used ${pct(args.low.wordShare)}.`,
@@ -469,6 +567,7 @@ function collectOpportunities(args: {
 
   if (args.vagueInvite) {
     items.push({
+      id: "invite",
       rank: rank("participation", args.focus, 2),
       title: "The invitation was too broad",
       observation: `${args.vagueInvite.speaker} was asked for a view in a general way and answered briefly.`,
@@ -482,6 +581,7 @@ function collectOpportunities(args: {
 
   if (norm && (!args.normHit || args.normHit.late)) {
     items.push({
+      id: "norm",
       rank: rank("roles", args.focus, 3),
       title: args.normHit ? "The norm arrived late" : "The participation norm stayed on paper",
       observation: args.normHit
@@ -498,6 +598,7 @@ function collectOpportunities(args: {
 
   if (!args.commitments.length) {
     items.push({
+      id: "close",
       rank: rank("coordination", args.focus, 4),
       title: "The close did not name an owner",
       observation: "The last part of the transcript does not show a person taking a next step with a time attached.",
@@ -510,6 +611,7 @@ function collectOpportunities(args: {
 
   if (args.namedMissing.length) {
     items.push({
+      id: "missing",
       rank: rank("participation", args.focus, 2),
       title: "A named person does not appear",
       observation: `${args.namedMissing.join(" and ")} ${args.namedMissing.length === 1 ? "is" : "are"} in the supporting materials and absent from the transcript.`,
@@ -529,59 +631,8 @@ function collectActions(
 ): ActionItem[] {
   const actions: ActionItem[] = []
   for (const item of opportunities) {
-    if (/person/i.test(item.title)) {
-      actions.push({
-        problem: "A disagreement was worded at a person.",
-        action:
-          "Set one line before the next decision: disagreements name the option. If a comment lands on someone, the facilitator restates it as a question about the choice, then asks what evidence would resolve it.",
-        owner: "Facilitator",
-        when: "The next decision discussion",
-        evaluate: "In the next transcript, challenges name an option or a requirement. Phrases such as “you always” or “you never” do not appear.",
-      })
-    } else if (/Airtime/i.test(item.title)) {
-      actions.push({
-        problem: `${ctx.top.name} used ${pct(ctx.top.wordShare)} of the words and ${ctx.low.name} used ${pct(ctx.low.wordShare)}.`,
-        action:
-          "Run a first round before open debate: one point each, no second turns. Ask a specific question of anyone who has not spoken. The person who usually opens waits until that round is finished.",
-        owner: "Facilitator",
-        when: "The start of the next working meeting",
-        evaluate: `Every person present speaks once before anyone takes a third turn. Equal minutes are not the goal. Look for a reason or a question from ${ctx.low.name}, not a longer speech.`,
-      })
-    } else if (/invitation/i.test(item.title)) {
-      actions.push({
-        problem: "A general prompt produced a very short reply.",
-        action: `Replace “any thoughts?” with one question tied to the role. For the person in ${ctx.low.name}’s seat, ask for a requirement, a risk, or a missing fact.`,
-        owner: "Facilitator",
-        when: "During the first round of the next meeting",
-        evaluate: "The invitation names a concrete topic, and the reply adds a requirement, a risk, or a question.",
-      })
-    } else if (/norm/i.test(item.title)) {
-      actions.push({
-        problem: "The participation norm was missing at the start.",
-        action: `Put this sentence at the top of the agenda and read it before the first proposal: “${tidy(ctx.norm || "Each person speaks once before anyone takes a second turn.", 160)}”`,
-        owner: "Facilitator",
-        when: "Before content, next meeting",
-        evaluate: "The norm is spoken in the first third of the meeting.",
-      })
-    } else if (/owner/i.test(item.title) || /close/i.test(item.title)) {
-      actions.push({
-        problem: "The meeting did not leave a visible owner and date.",
-        action: ctx.hasConsent
-          ? "Save the last five minutes. The note-taker writes one owner and one date. The facilitator asks whether anyone still objects."
-          : "Save the last five minutes. The note-taker writes one owner and one date before the meeting ends.",
-        owner: "Note-taker",
-        when: "The end of the next decision meeting",
-        evaluate: "The notes name an owner and a date. If the rule is consent, they also note that objections were invited.",
-      })
-    } else if (/named person/i.test(item.title)) {
-      actions.push({
-        problem: "Someone named in the materials does not appear in the transcript.",
-        action: "At the start, the facilitator checks who is missing and whether their input is required before a decision. Do not treat absence as a lack of interest.",
-        owner: "Facilitator",
-        when: "Opening of the next meeting",
-        evaluate: "The notes say who was absent and whether the decision waited for them.",
-      })
-    }
+    const next = actionFor(item.id, ctx)
+    if (next && !actions.some((action) => action.problem === next.problem)) actions.push(next)
   }
 
   const fillers: ActionItem[] = [
@@ -615,15 +666,83 @@ function collectActions(
   return actions.slice(0, 3)
 }
 
+function actionFor(
+  id: OpportunityId,
+  ctx: { top: Scored; low: Scored; totalTurns: number; norm: string; hasConsent: boolean },
+): ActionItem | null {
+  if (id === "relationship") {
+    return {
+      problem: "A disagreement was worded at a person.",
+      action:
+        "Write one line on the agenda: “Challenge the option, not the person.” If wording lands on someone, the facilitator restates it as a question about the choice, then asks what evidence would settle it.",
+      owner: "Facilitator",
+      when: "the next decision discussion",
+      evaluate: "The next transcript has challenges that name an option or a requirement. Phrases such as “you always” or “you never” do not appear.",
+    }
+  }
+  if (id === "airtime") {
+    return {
+      problem: `${ctx.top.name} used ${pct(ctx.top.wordShare)} of the words and ${ctx.low.name} used ${pct(ctx.low.wordShare)}.`,
+      action: `Open with a first round: one point each, no second turns. Ask the quieter seat a specific question (a risk, a requirement, or a missing fact). ${ctx.top.name} waits until that round is finished.`,
+      owner: "Facilitator",
+      when: "the start of the next working meeting",
+      evaluate: `Every person present speaks once before anyone takes a third turn. Look for a reason or a question from ${ctx.low.name}, not a longer speech.`,
+    }
+  }
+  if (id === "invite") {
+    return {
+      problem: "A general prompt produced a very short reply.",
+      action: `Replace “any thoughts?” with one question tied to the quieter seat. For the person in ${ctx.low.name}’s role, ask for a requirement, a risk, or a missing fact.`,
+      owner: "Facilitator",
+      when: "the first round of the next meeting",
+      evaluate: "The invitation names a concrete topic, and the reply adds a requirement, a risk, or a question.",
+    }
+  }
+  if (id === "norm") {
+    return {
+      problem: "The participation norm was missing at the start.",
+      action: `Put this sentence at the top of the agenda and read it before the first proposal: “${tidy(ctx.norm || "Each person speaks once before anyone takes a second turn.", 160)}”`,
+      owner: "Facilitator",
+      when: "before content in the next meeting",
+      evaluate: "The norm is spoken in the first third of the meeting.",
+    }
+  }
+  if (id === "close") {
+    return {
+      problem: "The meeting did not leave a visible owner and date.",
+      action: ctx.hasConsent
+        ? "Save the last five minutes. The note-taker writes one owner and one date. The facilitator asks whether anyone still objects."
+        : "Save the last five minutes. The note-taker writes one owner and one date before the meeting ends.",
+      owner: "Note-taker",
+      when: "the end of the next decision meeting",
+      evaluate: "The notes name an owner and a date. If the rule is consent, they also note that objections were invited.",
+    }
+  }
+  if (id === "missing") {
+    return {
+      problem: "Someone named in the materials does not appear in the transcript.",
+      action: "At the start, the facilitator checks who is missing and whether their input is required before a decision. Do not treat absence as a lack of interest.",
+      owner: "Facilitator",
+      when: "the opening of the next meeting",
+      evaluate: "The notes say who was absent and whether the decision waited for them.",
+    }
+  }
+  return null
+}
+
 function collectQuestions(opportunities: OppDraft[], focus: FocusId[]): string[] {
+  const ids = new Set(opportunities.map((item) => item.id))
   const pool: string[] = []
-  if (opportunities.some((item) => /Airtime|invitation|named/i.test(item.title)) || focus.includes("participation")) {
+  if (ids.has("relationship")) {
+    pool.push("If a challenge lands on a person, how do we restate it as a question about the option?")
+  }
+  if (ids.has("airtime") || ids.has("invite") || ids.has("missing") || focus.includes("participation")) {
     pool.push("What should the first round of our next meeting protect before anyone makes a full proposal?")
   }
-  if (opportunities.some((item) => /person|invitation/i.test(item.title)) || focus.includes("feedback") || focus.includes("communication")) {
+  if (ids.has("relationship") || ids.has("invite") || focus.includes("feedback") || focus.includes("communication")) {
     pool.push("When we disagree, what wording helps us stay on the option and still take the concern seriously?")
   }
-  if (opportunities.some((item) => /norm|owner|close/i.test(item.title)) || focus.includes("roles") || focus.includes("coordination")) {
+  if (ids.has("norm") || ids.has("close") || focus.includes("roles") || focus.includes("coordination")) {
     pool.push("Which sentence from our charter do we want read aloud before we open the decision?")
   }
   pool.push("What would we need to see in the last five minutes to trust that this decision has an owner?")
@@ -634,6 +753,159 @@ function collectQuestions(opportunities: OppDraft[], focus: FocusId[]): string[]
     if (unique.length === 3) break
   }
   return unique
+}
+
+function collectStudio(args: {
+  turns: Turn[]
+  relTurns: Turn[]
+  vagueInvite: { speaker: string; by: string; quote: string } | null
+  normHit: { speaker: string; text: string; late: boolean } | null
+  commitments: string[]
+  input: AnalysisInput
+  top: Scored
+  low: Scored
+  opportunities: OppDraft[]
+  feedbackNote: string
+}): { path: string[]; echo: EchoNote | null; replay: ReplayMoment[]; script: ScriptBeat[] } {
+  const path = args.turns.map((turn) => turn.speaker).slice(0, 40)
+  const replay = collectReplay(args)
+  const script = collectScript(args)
+  const echo = collectEcho(args)
+  return { path, echo, replay, script }
+}
+
+function collectReplay(args: {
+  turns: Turn[]
+  relTurns: Turn[]
+  vagueInvite: { speaker: string; by: string; quote: string } | null
+  normHit: { speaker: string; text: string; late: boolean } | null
+  commitments: string[]
+  low: Scored
+}): ReplayMoment[] {
+  const moments: ReplayMoment[] = []
+  if (args.relTurns[0]) {
+    const line = args.relTurns[0]
+    const index = args.turns.indexOf(line)
+    const before = index > 0 ? args.turns[index - 1] : null
+    moments.push({
+      id: "relationship",
+      kind: "relationship",
+      title: "The disagreement landed on a person",
+      whyThisMoment: "This is the turn a facilitator can still catch. Restate it as a question about the option.",
+      before: before ? { speaker: before.speaker, text: tidy(before.text, 180) } : null,
+      line: { speaker: line.speaker, text: tidy(line.text, 180) },
+      prompt: "You are the facilitator. What do you say in the next breath, so the group stays on the work?",
+      inviteName: args.low.name,
+    })
+  }
+  if (args.vagueInvite) {
+    const inviteTurn = args.turns.find((turn) => turn.speaker === args.vagueInvite?.by && turn.text === args.vagueInvite.quote)
+    const index = inviteTurn ? args.turns.indexOf(inviteTurn) : -1
+    const before = index > 0 ? args.turns[index - 1] : null
+    moments.push({
+      id: "invite",
+      kind: "invite",
+      title: "The invitation was too broad",
+      whyThisMoment: "A named person was asked in a general way and answered briefly. A specific question is the practice.",
+      before: before ? { speaker: before.speaker, text: tidy(before.text, 180) } : null,
+      line: { speaker: args.vagueInvite.by, text: tidy(args.vagueInvite.quote, 180) },
+      prompt: `Rewrite the invitation so ${args.vagueInvite.speaker} has something concrete to answer.`,
+      inviteName: args.vagueInvite.speaker,
+    })
+  }
+  if (args.normHit?.late) {
+    moments.push({
+      id: "norm",
+      kind: "norm",
+      title: "The charter arrived after the pattern",
+      whyThisMoment: "The participation rule was spoken, but late. Practice saying it before the first proposal.",
+      before: null,
+      line: { speaker: args.normHit.speaker, text: tidy(args.normHit.text, 180) },
+      prompt: "What do you say at the opening of the next meeting so this rule shows up before anyone proposes?",
+      inviteName: args.low.name,
+    })
+  }
+  if (!args.commitments.length && args.turns.length) {
+    const last = args.turns[args.turns.length - 1]
+    moments.push({
+      id: "close",
+      kind: "close",
+      title: "The close did not name an owner",
+      whyThisMoment: "The last turns do not show a person taking a next step with a time attached.",
+      before: args.turns.length > 1 ? { speaker: args.turns[args.turns.length - 2].speaker, text: tidy(args.turns[args.turns.length - 2].text, 180) } : null,
+      line: { speaker: last.speaker, text: tidy(last.text, 180) },
+      prompt: "What do you say in the last minute so the notes leave with an owner and a date?",
+      inviteName: "",
+    })
+  }
+  return moments.slice(0, 3)
+}
+
+function collectScript(args: {
+  input: AnalysisInput
+  top: Scored
+  low: Scored
+  opportunities: OppDraft[]
+}): ScriptBeat[] {
+  const purpose = fieldValue(args.input.charter, /purpose/i) || "the decision in front of us"
+  const norm = participationNorm(args.input.charter) || "Each person speaks once before anyone takes a second turn."
+  const ids = new Set(args.opportunities.map((item) => item.id))
+  const beats: ScriptBeat[] = [
+    {
+      clock: "0:00",
+      owner: "Facilitator",
+      say: `Restate the purpose in one sentence: “${tidy(purpose, 140)}.” Do not open with a vendor, tool, or plan.`,
+      why: "The charter asked the meeting to start from purpose. A proposal first sets the menu.",
+    },
+    {
+      clock: "0:01",
+      owner: "Facilitator",
+      say: `Read the participation rule aloud: “${tidy(norm, 140)}.” Then stop talking.`,
+      why: "A norm changes the room only if it is heard before the first long turn.",
+    },
+    {
+      clock: "0:02",
+      owner: "Facilitator",
+      say: `First round, one point each. Ask ${args.low.name}: “What requirement or risk is still missing?” ${args.top.name} waits until everyone has spoken once.`,
+      why: "Uneven airtime often starts with the first proposal. A round delays that.",
+    },
+  ]
+  if (ids.has("relationship")) {
+    beats.push({
+      clock: "0:08",
+      owner: "Facilitator",
+      say: "If wording lands on a person, restate it: “The concern is about the option. What evidence would settle it?” Then ask for that evidence.",
+      why: "Directness belongs on the work. This is the repair move, not a verdict about anyone.",
+    })
+  } else if (ids.has("close") || !ids.has("relationship")) {
+    beats.push({
+      clock: "0:08",
+      owner: "Note-taker",
+      say: "Write one owner and one date in the shared notes while the group can still hear it.",
+      why: "A lively close disappears unless it is visible before people leave.",
+    })
+  }
+  beats.push({
+    clock: "0:12",
+    owner: args.input.charter.match(/consent/i) ? "Facilitator" : "Note-taker",
+    say: args.input.charter.match(/consent/i)
+      ? "Read the owner and date. Ask: “Does anyone still object?” Wait through the silence."
+      : "Read the owner and date. Ask whether anything still needs an owner before you leave.",
+    why: "The last minute is a process, not leftover time.",
+  })
+  return beats.slice(0, 5)
+}
+
+function collectEcho(args: { feedbackNote: string; opportunities: OppDraft[]; top: Scored; low: Scored }): EchoNote | null {
+  if (!args.feedbackNote) return null
+  const airtime = args.opportunities.find((item) => item.id === "airtime")
+  const invite = args.opportunities.find((item) => item.id === "invite")
+  if (!airtime && !invite) return null
+  return {
+    source: tidy(args.feedbackNote, 180),
+    meeting: airtime ? airtime.observation : invite?.observation || "",
+    reading: `This meeting echoed a pattern already visible in the team’s other feedback. Treat it as a process that is repeating, not as a one-off mood. Try the 12-minute script once, then read the next transcript.`,
+  }
 }
 
 function parseTranscript(text: string): Turn[] {
@@ -950,13 +1222,9 @@ function escapeReg(value: string): string {
 }
 
 function sanitizeFocus(value: readonly string[]): FocusId[] {
-  const allowed = new Set(FOCUS_OPTIONS.map((option) => option.id))
+  const allowed = new Set(FOCUS_IDS)
   const focus = value.filter((item): item is FocusId => allowed.has(item as FocusId))
-  return focus.length ? focus : FOCUS_OPTIONS.map((option) => option.id)
-}
-
-function labelFor(id: FocusId): string {
-  return FOCUS_OPTIONS.find((option) => option.id === id)?.label.toLowerCase() ?? id
+  return focus.length ? focus : [...FOCUS_IDS]
 }
 
 function rank(area: FocusId, focus: FocusId[], severity: number): number {
@@ -1005,14 +1273,14 @@ function isSpeaker(value: unknown): value is SpeakerStat {
   return isText(row.name) && typeof row.words === "number" && typeof row.turns === "number"
 }
 
-function asStrengths(value: unknown): Strength[] | null {
-  if (!Array.isArray(value)) return null
+function asStrengths(value: unknown): Strength[] {
+  if (!Array.isArray(value)) return []
   const items = value.filter((item) => item && isText(item.title) && isText(item.detail)) as Strength[]
   return items.slice(0, 4)
 }
 
-function asOpportunities(value: unknown): Opportunity[] | null {
-  if (!Array.isArray(value)) return null
+function asOpportunities(value: unknown): Opportunity[] {
+  if (!Array.isArray(value)) return []
   const items: Opportunity[] = []
   for (const item of value) {
     if (!item || !isText(item.title) || !isText(item.observation) || !isText(item.evidence)) continue
@@ -1026,19 +1294,18 @@ function asOpportunities(value: unknown): Opportunity[] | null {
       limitations: isText(item.limitations) ? item.limitations.trim() : "This is one observation from the supplied text.",
     })
   }
-  return items.length ? items.slice(0, 3) : null
+  return items.slice(0, 3)
 }
 
-function asActions(value: unknown): ActionItem[] | null {
-  if (!Array.isArray(value)) return null
+function asActions(value: unknown): ActionItem[] {
+  if (!Array.isArray(value)) return []
   const items = value.filter(
     (item) => item && isText(item.problem) && isText(item.action) && isText(item.owner) && isText(item.when) && isText(item.evaluate),
   ) as ActionItem[]
-  return items.length ? items.slice(0, 3) : null
+  return items.slice(0, 3)
 }
 
-function asQuestions(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null
-  const items = value.filter(isText).map((item) => item.trim())
-  return items.length >= 3 ? items.slice(0, 3) : null
+function asQuestions(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(isText).map((item) => item.trim()).slice(0, 3)
 }

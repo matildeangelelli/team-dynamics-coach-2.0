@@ -41,20 +41,20 @@ export function AnalysisForm({
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">New analysis</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-ink">New Team Analysis</h1>
+        <p className="eyebrow">New analysis</p>
+        <h1 className="font-display mt-2 text-3xl font-semibold tracking-tight text-ink md:text-4xl">New Team Analysis</h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">
           A longer, representative transcript gives better evidence. Speaker labels and timestamps help. Nothing is stored after you leave this page session.
         </p>
       </div>
 
-      <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm leading-relaxed text-slate-700">
+      <div className="rounded-2xl border border-sky/20 bg-sky/8 px-4 py-3 text-sm leading-relaxed text-slate-700">
         Replace real names with Member A, Member B, and so on. Share assessments only when you have permission. Identifying information is not required.
         {aiConfigured && " Demo Mode is off: submitted text is sent to the model provider."}
       </div>
 
       {errors.length > 0 && (
-        <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+        <div role="alert" className="rounded-2xl border border-coral/30 bg-orange-50 px-4 py-3 text-sm text-orange-950">
           <p className="font-semibold">Add the missing pieces. What you already typed is still here.</p>
           <ul className="mt-1 list-disc pl-5">
             {errors.map((error) => (
@@ -64,12 +64,12 @@ export function AnalysisForm({
         </div>
       )}
 
-      <div className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-6">
+      <div className="surface space-y-5 p-5 md:p-6">
         <Field label="Team name" required hint="A project or course-team name is enough.">
           <input
             value={draft.teamName}
             onChange={(event) => update({ teamName: event.target.value })}
-            className={inputClass}
+            className="field-input"
             placeholder="Campus App Team"
           />
         </Field>
@@ -83,7 +83,7 @@ export function AnalysisForm({
             value={draft.transcript}
             onChange={(event) => update({ transcript: event.target.value })}
             rows={12}
-            className={inputClass}
+            className="field-input"
             placeholder={"[00:00] Member A: I think we should pick option one.\n[00:22] Member B: What requirement are we missing?"}
           />
           <p className="text-xs text-slate-500">
@@ -95,48 +95,51 @@ export function AnalysisForm({
         </Field>
 
         <Field label="Team charter" hint="Goals, responsibilities, norms, and decision rules. Optional.">
-          <textarea value={draft.charter} onChange={(event) => update({ charter: event.target.value })} rows={5} className={inputClass} />
+          <textarea value={draft.charter} onChange={(event) => update({ charter: event.target.value })} rows={5} className="field-input" />
         </Field>
 
         <Field label="Team feedback" hint="Notes from teammates, including Breakout Learning feedback. Optional.">
-          <textarea value={draft.feedback} onChange={(event) => update({ feedback: event.target.value })} rows={4} className={inputClass} />
+          <textarea value={draft.feedback} onChange={(event) => update({ feedback: event.target.value })} rows={4} className="field-input" />
         </Field>
 
         <Field label="Individual assessments" hint="Working preferences people have agreed to share. Leave blank if you do not have permission.">
-          <textarea value={draft.assessments} onChange={(event) => update({ assessments: event.target.value })} rows={4} className={inputClass} />
+          <textarea value={draft.assessments} onChange={(event) => update({ assessments: event.target.value })} rows={4} className="field-input" />
         </Field>
 
         <fieldset>
           <legend className="text-sm font-semibold text-ink">Analysis focus</legend>
           <p className="mt-1 text-sm text-slate-500">Select every process you want the reading to prioritize.</p>
           <div className="mt-3 grid gap-2 md:grid-cols-2">
-            {FOCUS_OPTIONS.map((option) => (
-              <label key={option.id} className="flex gap-3 rounded-xl border border-slate-200 px-3 py-3 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={draft.focus.includes(option.id)}
-                  onChange={() => toggleFocus(option.id)}
-                />
-                <span>
-                  <span className="font-semibold text-ink">{option.label}</span>
-                  <span className="mt-0.5 block text-slate-500">{option.hint}</span>
-                </span>
-              </label>
-            ))}
+            {FOCUS_OPTIONS.map((option) => {
+              const checked = draft.focus.includes(option.id)
+              return (
+                <label
+                  key={option.id}
+                  className={`flex gap-3 rounded-xl border px-3 py-3 text-sm transition ${
+                    checked ? "border-accent/40 bg-teal-50" : "border-slate-200 bg-white hover:border-accent/30"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-1 accent-accent"
+                    checked={checked}
+                    onChange={() => toggleFocus(option.id)}
+                  />
+                  <span>
+                    <span className="font-semibold text-ink">{option.label}</span>
+                    <span className="mt-0.5 block text-slate-500">{option.hint}</span>
+                  </span>
+                </label>
+              )
+            })}
           </div>
         </fieldset>
 
         <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={submit}
-            disabled={busy}
-            className="rounded-lg bg-navy px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#1d4063] disabled:opacity-60"
-          >
+          <button type="button" onClick={submit} disabled={busy} className="btn-primary">
             {busy ? "Analyzing…" : "Analyze Team"}
           </button>
-          <button type="button" onClick={onSample} className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-navy hover:bg-slate-50">
+          <button type="button" onClick={onSample} className="btn-secondary">
             Fill with sample data
           </button>
           <button
@@ -145,18 +148,16 @@ export function AnalysisForm({
               onChange({ teamName: "", transcript: "", charter: "", feedback: "", assessments: "", focus: FOCUS_OPTIONS.map((option) => option.id) })
               setErrors([])
             }}
-            className="rounded-lg px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+            className="btn-ghost"
           >
             Reset form
           </button>
         </div>
-        {busy && <p className="text-sm text-slate-500">Reading the meeting. This stays in the browser session and is not saved to an account.</p>}
+        {busy && <p className="text-sm text-accent">Reading the meeting. This stays in the browser session and is not saved to an account.</p>}
       </div>
     </div>
   )
 }
-
-const inputClass = "w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-ink outline-none focus:border-accent"
 
 function Field({
   label,
@@ -173,7 +174,7 @@ function Field({
     <label className="block space-y-1.5">
       <span className="text-sm font-semibold text-ink">
         {label}
-        {required && <span className="text-accent"> *</span>}
+        {required && <span className="text-coral"> *</span>}
       </span>
       {hint && <span className="block text-sm text-slate-500">{hint}</span>}
       {children}

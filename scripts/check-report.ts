@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
-import { buildReport } from "../src/lib/analyze.ts"
+import { buildReport, groundModelReport } from "../src/lib/analyze.ts"
+import { parseAnalysisInput } from "../src/lib/input.ts"
+import { coachFacilitatorLine } from "../src/lib/practice.ts"
 import { sampleInput } from "../src/lib/sample.ts"
 
 const sample = buildReport(sampleInput(), "sample")
@@ -54,6 +56,72 @@ while (headerTranscript.length < 8_000) {
 const headerReport = buildReport({ ...sampleInput(), transcript: headerTranscript }, "local")
 assert.doesNotMatch(headerReport.executiveSummary.challenges, /too little text/i)
 assert.ok(headerReport.participation.speakers.some((speaker) => speaker.name === "Member A"))
+assert.doesNotMatch(sample.executiveSummary.priority, /You asked about participation and inclusion, communication/i)
+assert.match(sample.executiveSummary.priority, /facilitator|first round|agenda|note-taker/i)
+assert.ok(sample.replay.some((moment) => moment.kind === "relationship"))
+assert.ok(sample.script.length >= 4)
+assert.ok(sample.echo)
+assert.ok(sample.path[0] === "Member A")
+const hardLine = sample.replay.find((moment) => moment.kind === "relationship")
+assert.ok(hardLine)
+assert.equal(coachFacilitatorLine("You always need to stop talking.", hardLine).verdict, "weak")
+assert.equal(
+  coachFacilitatorLine(
+    "I want us to stay on the option. What evidence would settle the accessibility requirement? Member B, which risk still looks real?",
+    hardLine,
+  ).verdict,
+  "strong",
+)
+
+const parsed = parseAnalysisInput({
+  teamName: "  Campus App Team  ",
+  transcript: sampleInput().transcript,
+  focus: ["participation", "not-a-focus"],
+  charter: 12,
+})
+assert.equal(parsed?.teamName.trim(), "Campus App Team")
+assert.deepEqual(parsed?.focus, ["participation"])
+assert.equal(parsed?.charter, "")
+assert.equal(parseAnalysisInput({ teamName: "Team", transcript: "   " }), null)
+
+const local = buildReport(sampleInput(), "local")
+const grounded = groundModelReport(
+  {
+    executiveSummary: {
+      strengths: "The group reused an idea.",
+      challenges: "Airtime was uneven.",
+      priority: "Run a first round.",
+    },
+    participation: {
+      summary: "Invented counts.",
+      speakers: [{ name: "Invented", turns: 99, words: 9999, wordShare: 1, questions: 0, buildOns: 0 }],
+    },
+    communication: { summary: "Questions were answered." },
+    roles: { summary: "No charter check." },
+    strengths: [{ title: "Uptake", detail: "An idea moved." }, { title: "Work challenge", detail: "A reason was attached." }],
+    opportunities: [
+      {
+        title: "Airtime",
+        observation: "One person held the floor.",
+        evidence: "A short quote.",
+        whyItMatters: "Later speakers inherit the menu.",
+        confidence: "low",
+        limitations: "One meeting.",
+      },
+    ],
+    actions: [
+      { problem: "Thin", action: "Too short", owner: "Facilitator", when: "Now", evaluate: "Look" },
+      { problem: "Thin two", action: "Also short", owner: "Facilitator", when: "Now", evaluate: "Look" },
+      { problem: "Thin three", action: "Still short", owner: "Facilitator", when: "Now", evaluate: "Look" },
+    ],
+    discussionQuestions: ["Q1?", "Q2?", "Q3?"],
+  },
+  sampleInput(),
+  local,
+)
+assert.ok(grounded)
+assert.deepEqual(grounded.participation.speakers, local.participation.speakers)
+assert.deepEqual(grounded.actions, local.actions)
 
 console.log("report checks ok")
 console.log(sample.executiveSummary.priority.slice(0, 180))
